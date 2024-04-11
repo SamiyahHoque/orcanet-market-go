@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
 
 	pb "orcanet/market"
 
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/record"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // printRoutingTable prints the current state of the DHT's routing table to the console.
@@ -34,55 +34,21 @@ func printRoutingTable(dht *dht.IpfsDHT) {
 // - req: A *pb.RegisterFileRequest containing the user's information and the file hash to register.
 //
 // Returns: An error if the registration fails, or nil on success.
-func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileRequest) error {
-	//get existing data from DHT
-	key := fmt.Sprintf("/market/file/%s", req.FileHash)
-	dataChan, _ := dht.SearchValue(ctx, key)
+func registerFile(ctx context.Context, dht *dht.IpfsDHT, fileHash string, envelope *record.Envelope) error {
+	key := fmt.Sprintf("/market/file/%s", fileHash)
 
-	var rawData []byte
-	for data := range dataChan {
-		rawData = data // Assuming data is a byte slice containing JSON data
-		break          //we only expect one result
-	}
-
-	var result DHTvalue
-	_ = json.Unmarshal(rawData, &result)
-
-	ids := strings.Split(result.Ids, "|")
-
-	// check if the user already placed this file in
-	for _, id := range ids {
-		if id == req.User.Id {
-			errMsg := "You have already placed this file in the DHT."
-			fmt.Println(errMsg)
-			return fmt.Errorf(errMsg)
-		}
-	}
-
-	var appendedResult DHTvalue = DHTvalue{
-		Ids:    result.Ids + req.User.Id + "|",
-		Names:  result.Names + req.User.Name + "|",
-		Ips:    result.Ips + req.User.Ip + "|",
-		Ports:  result.Ports + strconv.Itoa(int(req.User.Port)) + "|",
-		Prices: result.Prices + strconv.Itoa(int(req.User.Price)) + "|",
-	}
-
-	//serialize the User object to byte slice for storage
-	data, err := json.Marshal(appendedResult)
-
+	// Serialize the envelope containing the PeerRecord
+	data, err := envelope.Marshal()
 	if err != nil {
-		errMsg := fmt.Sprintf("Error marshaling user data for file hash %s: %v", req.FileHash, err)
-		fmt.Println(errMsg)
-		return fmt.Errorf(errMsg)
+		return fmt.Errorf("failed to marshal PeerRecord envelope: %v", err)
 	}
 
+	// Store the serialized data in the DHT
 	if err := dht.PutValue(ctx, key, data); err != nil {
-		errMsg := fmt.Sprintf("Error putting value in the DHT for file hash %s: %v", req.FileHash, err)
-		fmt.Println(errMsg)
-		return fmt.Errorf(errMsg)
+		return fmt.Errorf("failed to put value in the DHT for file hash %s: %v", fileHash, err)
 	}
 
-	fmt.Printf("Successfully registered file with hash %s\n", req.FileHash)
+	fmt.Printf("Successfully registered file with hash %s\n", fileHash)
 	return nil
 }
 
@@ -99,54 +65,41 @@ func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileReq
 func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
 	key := fmt.Sprintf("/market/file/%s", req.FileHash)
 
-	dataChan, err := dht.SearchValue(ctx, key)
-
+	// Retrieve the serialized envelope from the DHT
+	envelopeBytes, err := dht.GetValue(ctx, key)
 	if err != nil {
-		errMsg := fmt.Sprintf("Error searching for file %s", req.FileHash)
-		fmt.Println(errMsg)
-		return nil, fmt.Errorf(errMsg)
+		return nil, fmt.Errorf("error searching for file %s: %w", req.FileHash, err)
 	}
 
-	var rawData []byte
-	for data := range dataChan {
-		rawData = data // Assuming data is a byte slice containing JSON data
-		break          //we only expect one result
+	// Deserialize the envelope
+	envelope, err := record.UnmarshalEnvelope(envelopeBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal envelope: %w", err)
 	}
 
-	var result DHTvalue
-	_ = json.Unmarshal(rawData, &result)
-
-	ids := strings.Split(result.Ids, "|")
-	names := strings.Split(result.Names, "|")
-	ips := strings.Split(result.Ips, "|")
-	ports := strings.Split(result.Ports, "|")
-	prices := strings.Split(result.Prices, "|")
-
-	var holders = []*pb.User{}
-
-	if !(len(ids) == len(names) && len(names) == len(ips) && len(ips) == len(ports) && len(ports) == len(prices)) {
-		fmt.Println("Issue with dht returns - unequal data")
-		return &pb.HoldersResponse{Holders: holders}, nil
+	// Assuming the envelope payload is a PeerRecord, we now extract it
+	// Note: This step may vary depending on the actual payload type.
+	var peerRec peer.PeerRecord
+	if err := peerRec.UnmarshalRecord(envelope.RawPayload); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal peer record from envelope payload: %w", err)
 	}
 
-	if len(ids) <= 1 { //one because split will have an extra empty element if the key exists
-		return &pb.HoldersResponse{Holders: holders}, nil
-	}
-
-	for i := 0; i < len(ids)-1; i++ {
-		port, _ := strconv.Atoi(ports[i])
-		price, _ := strconv.Atoi(prices[i])
-
-		user := &pb.User{
-			Id:    ids[i],
-			Name:  names[i],
-			Ip:    ips[i],
-			Port:  int32(port),
-			Price: int64(price),
-		}
-
-		holders = append(holders, user)
+	// Convert the PeerRecord to the protobuf response format
+	// This example is simplified; adjust based on your actual protobuf structure
+	holders := []*pb.PeerInfo{
+		// Populate the PeerInfo based on peerRec
+		{PeerId: peerRec.PeerID.String()},
+		// Include multiaddresses if your pb.PeerInfo structure supports them
 	}
 
 	return &pb.HoldersResponse{Holders: holders}, nil
+}
+
+// Helper function to convert multiaddresses to strings
+func convertAddrsToStrings(addrs []multiaddr.Multiaddr) []string {
+	addrStrs := make([]string, len(addrs))
+	for i, addr := range addrs {
+		addrStrs[i] = addr.String()
+	}
+	return addrStrs
 }

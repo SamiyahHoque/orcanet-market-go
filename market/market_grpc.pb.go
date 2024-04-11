@@ -28,9 +28,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type MarketClient interface {
-	// register a file on the market
+	// Register a file on the market associated with a peer.
 	RegisterFile(ctx context.Context, in *RegisterFileRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	// check for holders of a file. returns a list of users
+	// Check for holders of a file, returns a list of peers holding the file.
 	CheckHolders(ctx context.Context, in *CheckHoldersRequest, opts ...grpc.CallOption) (*HoldersResponse, error)
 }
 
@@ -64,9 +64,9 @@ func (c *marketClient) CheckHolders(ctx context.Context, in *CheckHoldersRequest
 // All implementations must embed UnimplementedMarketServer
 // for forward compatibility
 type MarketServer interface {
-	// register a file on the market
+	// Register a file on the market associated with a peer.
 	RegisterFile(context.Context, *RegisterFileRequest) (*emptypb.Empty, error)
-	// check for holders of a file. returns a list of users
+	// Check for holders of a file, returns a list of peers holding the file.
 	CheckHolders(context.Context, *CheckHoldersRequest) (*HoldersResponse, error)
 	mustEmbedUnimplementedMarketServer()
 }

@@ -4,13 +4,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"math/rand"
+	"time"
 
 	pb "orcanet/market"
 
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/record"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -99,6 +102,16 @@ func main() {
 	// Connect the validator
 	kademliaDHT.Validator = &CustomValidator{}
 
+	// Create a PeerRecord for the host
+	record, envelope, _ := createPeerRecord(host, privKey)
+
+	serializedRecord, err := record.MarshalRecord()
+	if err != nil {
+		fmt.Errorf("Failed to serialize PeerRecord: %v", err)
+	}
+
+	fmt.Printf("Serialized PeerRecord: %x\n", serializedRecord)
+
 	// Bootstrap the DHT
 	if err := kademliaDHT.Bootstrap(ctx); err != nil {
 		fmt.Errorf("Failed to bootstrap DHT: %s", err)
@@ -107,14 +120,33 @@ func main() {
 	connectToBootstrapPeers(ctx, host, bootstrapPeers)
 
 	// Create the user, connect to peers and run CLI
-	user := promptForUserInfo(ctx)
+	// user := promptForUserInfo(ctx)
 	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
 
 	fmt.Println("Looking for existence of peers on the network before proceeding...")
 	checkPeerExistence(ctx, host, kademliaDHT, routingDiscovery)
 	fmt.Println("Peer(s) found! proceeding with the application.")
 
-	runCLI(ctx, host, kademliaDHT, routingDiscovery, user)
+	runCLI(ctx, host, kademliaDHT, routingDiscovery, envelope)
+}
+
+func createPeerRecord(h host.Host, privateKey libp2pcrypto.PrivKey) (*peer.PeerRecord, *record.Envelope, error) {
+	// Generate a sequence number for the record, e.g., current unix timestamp
+	seq := uint64(time.Now().Unix())
+
+	// Create a new PeerRecord with the host's ID, addresses, and a sequence number
+	peerRec := &peer.PeerRecord{
+		PeerID: h.ID(),
+		Addrs:  h.Addrs(), //host.Peerstore().Addrs(host.ID())
+		Seq:    seq,
+	}
+
+	// Sign the record to create an envelope
+	envelope, err := record.Seal(peerRec, privateKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return peerRec, envelope, nil
 }
 
 // promptForUserInfo creates a user struct based on information
@@ -124,28 +156,28 @@ func main() {
 // - ctx: A context.Context for controlling the function's execution lifetime.
 //
 // Returns: A *pb.User containing the ID, name, IP address, port, and price of the user
-func promptForUserInfo(ctx context.Context) *pb.User {
-	var username string
-	fmt.Print("Enter username: ")
-	fmt.Scanln(&username)
+// func promptForUserInfo(ctx context.Context) *pb.User {
+// 	var username string
+// 	fmt.Print("Enter username: ")
+// 	fmt.Scanln(&username)
 
-	// Generate a random ID for new user
-	userID := fmt.Sprintf("user%d", rand.Intn(10000))
+// 	// Generate a random ID for new user
+// 	userID := fmt.Sprintf("user%d", rand.Intn(10000))
 
-	fmt.Print("Enter a price for supplying files: ")
-	var price int64
-	fmt.Scanln(&price)
+// 	fmt.Print("Enter a price for supplying files: ")
+// 	var price int64
+// 	fmt.Scanln(&price)
 
-	user := &pb.User{
-		Id:    userID,
-		Name:  username,
-		Ip:    "localhost",
-		Port:  416320,
-		Price: price,
-	}
+// 	user := &pb.User{
+// 		Id:    userID,
+// 		Name:  username,
+// 		Ip:    "localhost",
+// 		Port:  416320,
+// 		Price: price,
+// 	}
 
-	return user
-}
+// 	return user
+// }
 
 // runCLI provides a command line interface for users to register files, check the holders for a file,
 // and check for connected peers
@@ -157,7 +189,7 @@ func promptForUserInfo(ctx context.Context) *pb.User {
 // - routingDiscovery: A pointer to the drouting.RoutingDiscovery used for peer discovery.
 //
 // Returns: None
-func runCLI(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscovery *drouting.RoutingDiscovery, user *pb.User) {
+func runCLI(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscovery *drouting.RoutingDiscovery, envelope *record.Envelope) {
 	for {
 		go peerDiscovery(ctx, host, dht, routingDiscovery)
 
@@ -187,8 +219,8 @@ func runCLI(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscov
 				fmt.Errorf("Error: ", err)
 				continue
 			}
-			req := &pb.RegisterFileRequest{User: user, FileHash: fileHash}
-			registerFile(ctx, dht, req)
+			// req := &pb.RegisterFileRequest{User: user, FileHash: fileHash}
+			registerFile(ctx, dht, fileHash, envelope)
 		case 2:
 			fmt.Print("Enter a file hash: ")
 			var fileHash string
